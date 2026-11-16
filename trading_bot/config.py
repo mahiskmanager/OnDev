@@ -23,12 +23,38 @@ def _float(name: str, default: float, minimum: float = 0.0) -> float:
     except (TypeError, ValueError):
         return default
 
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID", "").strip()
-GROQ_ENABLED = _bool("GROQ_ENABLED", False)
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
-GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b").strip()
+def _is_placeholder(value: str) -> bool:
+    low = value.strip().lower()
+    return low.startswith(("tu_", "clave_groq_", "pega_"))
+
+def _groq_keys() -> list[str]:
+    """Reúne GROQ_API_KEY_1..7 (y la clave legacy GROQ_API_KEY) sin duplicados."""
+    keys: list[str] = []
+    for index in range(1, 8):
+        value = os.getenv(f"GROQ_API_KEY_{index}", "").strip()
+        if value and not _is_placeholder(value) and value not in keys:
+            keys.append(value)
+    legacy = os.getenv("GROQ_API_KEY", "").strip()
+    if legacy and not _is_placeholder(legacy) and legacy not in keys:
+        keys.append(legacy)
+    return keys
+
+TOKEN = "" if _is_placeholder(os.getenv("TELEGRAM_BOT_TOKEN", "")) else os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+# TELEGRAM_CHAT_ID es el nombre oficial; ADMIN_CHAT_ID se conserva por compatibilidad.
+ADMIN_CHAT_ID = (os.getenv("TELEGRAM_CHAT_ID") or os.getenv("ADMIN_CHAT_ID") or "").strip()
+if _is_placeholder(ADMIN_CHAT_ID):
+    ADMIN_CHAT_ID = ""
+GROQ_API_KEYS = _groq_keys()
+GROQ_API_KEY = GROQ_API_KEYS[0] if GROQ_API_KEYS else ""
+GROQ_ENABLED = _bool("GROQ_ENABLED", bool(GROQ_API_KEYS))
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile").strip()
 GROQ_TIMEOUT = _int("GROQ_TIMEOUT", 35)
+GROQ_KEY_COOLDOWN = _int("GROQ_KEY_COOLDOWN", 60)
+# Parámetros del analista institucional
+RISK_PER_TRADE_PCT = _float("RISK_PER_TRADE_PCT", 1.0, 0.1)
+MIN_RR = _float("MIN_RR", 2.0, 1.0)
+MIN_CONFLUENCE = _int("MIN_CONFLUENCE", 3, 1)
+NEWS_ENABLED = _bool("NEWS_ENABLED", True)
 TIMEZONE = os.getenv("TIMEZONE", "America/Guatemala")
 DEFAULT_TIMEFRAME = os.getenv("DEFAULT_TIMEFRAME", "5m").lower()
 CACHE_SECONDS = _int("CACHE_SECONDS", 25)
@@ -53,6 +79,8 @@ STALE_MINUTES = {
     "5m": _int("MAX_STALE_MINUTES_5M", 30),
     "15m": _int("MAX_STALE_MINUTES_15M", 60),
     "1h": _int("MAX_STALE_MINUTES_1H", 180),
+    "4h": _int("MAX_STALE_MINUTES_4H", 600),
+    "1d": _int("MAX_STALE_MINUTES_1D", 4320),
 }
 
 ASSETS = {
@@ -181,14 +209,36 @@ ASSETS = {
     "UBER": "UBER",
 }
 
-TIMEFRAMES = {"1m": "1m", "5m": "5m", "15m": "15m", "1h": "60m"}
+# 4h no existe en Yahoo Finance: se descarga en 60m y se re-muestrea a 4 horas.
+TIMEFRAMES = {"1m": "1m", "5m": "5m", "15m": "15m", "1h": "60m", "4h": "60m", "1d": "1d"}
+# Jerarquía del analista institucional (el marco mayor manda).
+MACRO_TIMEFRAMES = ("1d", "4h")
+OPERATIVE_TIMEFRAMES = ("1h", "15m")
 
 def validate_config():
     if not TOKEN:
         raise RuntimeError("Falta TELEGRAM_BOT_TOKEN en .env")
     if not ADMIN_CHAT_ID:
-        raise RuntimeError("Falta ADMIN_CHAT_ID en .env")
-    if GROQ_ENABLED and not GROQ_API_KEY:
-        raise RuntimeError("GROQ_ENABLED=true pero falta GROQ_API_KEY")
+        raise RuntimeError("Falta TELEGRAM_CHAT_ID en .env")
+    if GROQ_ENABLED and not GROQ_API_KEYS:
+        raise RuntimeError("GROQ_ENABLED=true pero falta al menos una GROQ_API_KEY_1..7")
     if DEFAULT_TIMEFRAME not in TIMEFRAMES:
         raise RuntimeError(f"DEFAULT_TIMEFRAME inválido: {DEFAULT_TIMEFRAME}")
+
+
+def _norm(text: str) -> str:
+    return "".join(ch for ch in str(text).upper() if ch.isalnum())
+
+def resolve_asset(text: str) -> str | None:
+    """Acepta 'EUR/USD', 'EURUSD', 'BTCUSDT', 'btc-usd', 'AAPL' o un ticker de Yahoo."""
+    wanted = _norm(text)
+    if not wanted:
+        return None
+    candidates = [wanted]
+    if wanted.endswith("USDT"):
+        candidates.append(wanted[:-4] + "USD")
+    for candidate in candidates:
+        for name, ticker in ASSETS.items():
+            if candidate == _norm(name) or candidate == _norm(ticker):
+                return name
+    return None

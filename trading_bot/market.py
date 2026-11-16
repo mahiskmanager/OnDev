@@ -11,7 +11,16 @@ log = logging.getLogger(__name__)
 _cache = {}
 _cache_lock = threading.Lock()
 
-PERIODS = {"1m": "5d", "5m": "1mo", "15m": "60d", "1h": "730d"}
+PERIODS = {"1m": "5d", "5m": "1mo", "15m": "60d", "1h": "730d", "4h": "730d", "1d": "2y"}
+
+_OHLCV_AGG = {"Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum"}
+
+
+def _resample_4h(df: pd.DataFrame) -> pd.DataFrame:
+    """Yahoo no ofrece 4h: se construye a partir de velas de 60 minutos."""
+    agg = {k: v for k, v in _OHLCV_AGG.items() if k in df.columns}
+    out = df.resample("4h").agg(agg).dropna(subset=["Open", "High", "Low", "Close"])
+    return out
 
 def _download(ticker: str, timeframe: str) -> pd.DataFrame:
     interval = config.TIMEFRAMES[timeframe]
@@ -44,6 +53,8 @@ def _download(ticker: str, timeframe: str) -> pd.DataFrame:
     # Evita velas corruptas antes de calcular indicadores.
     df = df.copy()
     df = df[(pd.to_numeric(df["High"], errors="coerce") >= pd.to_numeric(df["Low"], errors="coerce"))]
+    if timeframe == "4h":
+        df = _resample_4h(df)
     return df
 
 def get_market_frame(ticker: str, timeframe: str, force: bool = False) -> pd.DataFrame:

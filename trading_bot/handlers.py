@@ -11,13 +11,14 @@ from telegram.ext import (
 )
 
 from . import config
-from .config import ASSETS, TIMEFRAMES, validate_config
+from .config import ASSETS, TIMEFRAMES, validate_config, resolve_asset
 from .storage import (
     init_db, add_signal, set_result, recent_signals,
     statistics, export_csv
 )
 from .analyzer import analyze
-from .formatting import analysis_message, signal_keyboard
+from .formatting import analysis_message, signal_keyboard, trader_message
+from .trader import institutional_analysis
 from .scanner import scan_once, scanner_loop
 from .ai import list_models
 from .market import get_market_frame
@@ -44,8 +45,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not authorized(update):
         return await deny(update)
     await update.effective_message.reply_text(
-        "🤖 TRADING AI ANALYZER PRO 3.0\n\n"
-        "/analizar EUR/USD 5m\n/scan\n/auto_on\n/auto_off\n"
+        "🤖 TRADING AI ANALYZER PRO 3.1 — Trader institucional\n\n"
+        "/analizar BTCUSDT — análisis completo 1D+4H → 1H+15M (confluencia 3/5)\n"
+        "/rapido EUR/USD 5m — motor técnico rápido CALL/PUT\n/scan\n/auto_on\n/auto_off\n"
         "/investsmart — guía de validación de activos y OTC\n"
         "/activos\n/timeframes\n/senales\n/stats\n/stats_hoy\n"
         "/riesgo\n/calcriesgo capital riesgo_pct entrada stop [valor_punto]\n"
@@ -62,7 +64,9 @@ async def status(update, context):
         f"Escáner automático: {'ACTIVO' if auto else 'INACTIVO'}\n"
         f"Proveedor: Yahoo Finance (referencia externa; no replica necesariamente OTC de InvestSmart)\n"
         f"Groq: {'ACTIVO' if config.GROQ_ENABLED else 'DESACTIVADO'}\n"
+        f"Claves Groq en rotación: {len(config.GROQ_API_KEYS)}\n"
         f"Modelo configurado: {config.GROQ_MODEL if config.GROQ_ENABLED else 'N/A'}\n"
+        f"Riesgo por operación: {config.RISK_PER_TRADE_PCT:g}% | R:R mínimo 1:{config.MIN_RR:g} | confluencia mínima {config.MIN_CONFLUENCE}/5\n"
         f"Temporalidad escáner: {config.DEFAULT_TIMEFRAME}\n"
         f"Intervalo: {config.SCAN_INTERVAL_SECONDS}s"
     )
@@ -78,7 +82,7 @@ async def investsmart(update, context):
     await update.effective_message.reply_text(
         "GUÍA PARA INVESTSMART\n\n"
         "1) Selecciona en /activos el mismo par que aparece en InvestSmart.\n"
-        "2) Ejecuta /analizar EUR/USD 5m (cambia activo y temporalidad).\n"
+        "2) Ejecuta /analizar EUR/USD (análisis institucional) o /rapido EUR/USD 5m (motor rápido).\n"
         "3) Compara manualmente el precio y la vela con InvestSmart.\n"
         "4) Si es OTC, recuerda que Yahoo Finance no proporciona necesariamente "
         "el mismo feed OTC; el análisis externo NO valida ese precio.\n"
@@ -95,17 +99,41 @@ async def timeframes(update, context):
     )
 
 async def analizar(update, context):
+    """Análisis institucional: sesgo 1D+4H, ejecución 1H+15M, confluencia 3/5."""
+    if not authorized(update): return await deny(update)
+    if not context.args:
+        return await update.effective_message.reply_text(
+            "Uso: /analizar BTCUSDT  (también EUR/USD, EURUSD, AAPL, ETHUSDT…)"
+        )
+    asset = resolve_asset(context.args[0])
+    if asset is None:
+        return await update.effective_message.reply_text("Activo no permitido. Usa /activos.")
+    msg = await update.effective_message.reply_text("⏳ Analizando 1D, 4H, 1H y 15M + noticias...")
+    try:
+        result = await institutional_analysis(asset, ASSETS[asset])
+        keyboard = None
+        setup = result.get("setup")
+        if setup:
+            sid = add_signal(
+                asset, ASSETS[asset], "1h", {"price": result["price"], "source": "institutional"},
+                {"direction": result["decision"], "confidence": result["confluence"] * 20,
+                 "entry": setup["entry"], "stop": setup["sl"], "target": setup["tp1"], "risk": "MEDIO"},
+            )
+            keyboard = signal_keyboard(sid)
+        await msg.edit_text(trader_message(result), parse_mode="HTML", reply_markup=keyboard)
+    except Exception as exc:
+        log.exception("Error en análisis institucional %s", asset)
+        await msg.edit_text(f"❌ No se pudo analizar {asset}:\n{str(exc)[:700]}")
+
+async def rapido(update, context):
     if not authorized(update): return await deny(update)
     if len(context.args) < 2:
         return await update.effective_message.reply_text(
-            "Uso: /analizar EUR/USD 5m"
+            "Uso: /rapido EUR/USD 5m"
         )
-    asset = context.args[0].upper()
+    asset = resolve_asset(context.args[0])
     timeframe = context.args[1].lower()
-    ticker_to_asset = {v.upper(): k for k, v in ASSETS.items()}
-    if asset in ticker_to_asset:
-        asset = ticker_to_asset[asset]
-    if asset not in ASSETS:
+    if asset is None:
         return await update.effective_message.reply_text(
             "Activo no permitido. Usa /activos."
         )
@@ -248,8 +276,8 @@ async def patrones(update, context):
     if not authorized(update): return await deny(update)
     if len(context.args) < 2:
         return await update.effective_message.reply_text("Uso: /patrones EUR/USD 5m")
-    asset, timeframe = context.args[0].upper(), context.args[1].lower()
-    if asset not in ASSETS or timeframe not in TIMEFRAMES:
+    asset, timeframe = resolve_asset(context.args[0]), context.args[1].lower()
+    if asset is None or timeframe not in TIMEFRAMES:
         return await update.effective_message.reply_text("Activo o temporalidad inválidos. Usa /activos y /timeframes.")
     try:
         frame = await asyncio.to_thread(get_market_frame, ASSETS[asset], timeframe)
@@ -264,8 +292,8 @@ async def backtest_cmd(update, context):
     if not authorized(update): return await deny(update)
     if len(context.args) < 2:
         return await update.effective_message.reply_text("Uso: /backtest EUR/USD 5m [capital]")
-    asset, timeframe = context.args[0].upper(), context.args[1].lower()
-    if asset not in ASSETS or timeframe not in TIMEFRAMES:
+    asset, timeframe = resolve_asset(context.args[0]), context.args[1].lower()
+    if asset is None or timeframe not in TIMEFRAMES:
         return await update.effective_message.reply_text("Activo o temporalidad inválidos.")
     try:
         capital = float(context.args[2]) if len(context.args) > 2 else 1000.0
@@ -337,7 +365,7 @@ def run():
     app = (Application.builder().token(config.TOKEN)
            .concurrent_updates(False).post_init(post_init).build())
     handlers = [
-        ("start", start), ("status", status), ("analizar", analizar),
+        ("start", start), ("status", status), ("analizar", analizar), ("rapido", rapido),
         ("scan", scan), ("auto_on", auto_on), ("auto_off", auto_off),
         ("activos", activos), ("timeframes", timeframes), ("investsmart", investsmart),
         ("senales", senales), ("stats", stats), ("stats_hoy", stats_hoy),
