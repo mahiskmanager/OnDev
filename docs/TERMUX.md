@@ -9,7 +9,7 @@ bash install.sh
 python run.py
 ```
 
-El instalador solicita de forma oculta el token de Telegram, el ID numérico del chat privado y la API key de Groq. El ID solicitado no es el número telefónico ni el nombre de usuario.
+El instalador solicita de forma oculta el token de Telegram, el ID numérico del chat privado y hasta 7 API keys de Groq (la 1 es obligatoria; el bot las rota automáticamente). El ID solicitado no es el número telefónico ni el nombre de usuario.
 
 Editar credenciales:
 

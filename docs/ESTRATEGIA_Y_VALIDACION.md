@@ -9,6 +9,13 @@
 - Estructura: soporte/resistencia recientes y canales Donchian.
 - Velas: doji, martillo/rechazo inferior, estrella fugaz/rechazo superior, envolventes e inside bar.
 
+## Analista institucional (`/analizar`)
+- Sesgo: 1D y 4H deben coincidir (o uno lateral sin ruptura contraria); estructuras opuestas o CHoCH/BOS contrario confirmado → abstención.
+- Criterios (≥ 3 de 5): S/R de alta confluencia, patrón a favor, RSI/MACD sin divergencia contraria, SMC (OB/FVG/barrido en zona correcta) y noticias que no contradigan.
+- Riesgo: SL tras la zona de entrada/swing + 0,3 ATR; TP1/TP2 en los siguientes S/R; R:R(TP2) ≥ 1:2.
+- Abstención: estructura contradictoria, confluencia < 3, 4H lateral muy estrecho (30 velas < 3 ATR), noticia de alto impacto inminente sin dirección o datos retrasados.
+- Validación: las reglas no están optimizadas con backtest; úsalas en demo/forward-test antes de arriesgar capital. `/backtest` sigue evaluando solo el motor rápido.
+
 ## Confianza
 El valor en pantalla es un índice heurístico de confluencia, no una probabilidad calibrada de ganar. Un valor 80/100 no significa 80% de probabilidad.
 
